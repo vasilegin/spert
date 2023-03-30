@@ -21,6 +21,7 @@ class BaseTrainer:
     """ Trainer base class with common methods """
 
     def __init__(self, args: argparse.Namespace):
+
         self._args = args
         self._debug = self._args.debug
 
@@ -63,8 +64,9 @@ class BaseTrainer:
         self._best_results = dict()
 
         # CUDA devices
-        self._device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
-        self._gpu_count = torch.cuda.device_count()
+        self._device = torch.device("cpu")
+        # self._device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+        # self._gpu_count = torch.cuda.device_count()
 
         # set seed
         if args.seed is not None:

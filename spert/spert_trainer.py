@@ -1,4 +1,5 @@
 import argparse
+import json
 import math
 import os
 from typing import Type
@@ -34,6 +35,106 @@ class SpERTTrainer(BaseTrainer):
         self._tokenizer = BertTokenizer.from_pretrained(args.tokenizer_path,
                                                         do_lower_case=args.lowercase,
                                                         cache_dir=args.cache_path)
+
+    def eval_cross_validation(self, dataset_path: str, types_path: str, input_reader_cls: Type[BaseInputReader], parts: int):
+        args = self._args
+        dataset_label, train_label, valid_label = 'dataset', 'train', 'valid'
+
+        self._logger.info("Datasets: %s" % (dataset_path))
+        self._logger.info("Model type: %s" % args.model_type)
+
+        # create log csv files
+        self._init_train_logging(train_label)
+        self._init_eval_logging(valid_label)
+
+        # read datasets
+        input_reader = input_reader_cls(types_path, self._tokenizer, args.neg_entity_count,
+                                        args.neg_relation_count, args.max_span_size, self._logger)
+
+        with open(dataset_path, "r") as dataset:
+            dataset = json.load(dataset)
+
+        train_path_pattern = 'assets/train'
+        val_path_pattern = 'assets/val'
+
+        start = 0
+        end = len(dataset)
+        size = math.ceil(end/parts)
+
+        for i in range(1, parts + 1):
+            train_dataset = dataset[0:start] + dataset[start + size:end]
+            val_dataset = dataset[start:start + size]
+            with open(os.path.join(train_path_pattern, f"train_{i}.json"), 'w') as train:
+                json.dump(train_dataset, train, ensure_ascii=False, indent=4)
+            with open(os.path.join(val_path_pattern, f"val_{i}.json"), 'w') as val:
+                json.dump(val_dataset, val, ensure_ascii=False, indent=4)
+            start += size
+
+        data = input_reader.read(dataset_path, dataset_label)
+
+        # create evaluator
+        predictions_path = os.path.join(self._log_path, f'predictions_validate_epoch_{args.epochs}.json')
+        examples_path = os.path.join(self._log_path, f'examples_%s_validate_epoch_{args.epochs}.html')
+        evaluator = Evaluator(data, input_reader, self._tokenizer,
+                              self._args.rel_filter_threshold, self._args.no_overlapping, predictions_path,
+                              examples_path, self._args.example_count)
+
+        for i in range(1, parts + 1):
+            train_path = os.path.join(train_path_pattern, f"train_{i}.json")
+            valid_path = os.path.join(val_path_pattern, f"val_{i}.json")
+
+            train_dataset = input_reader.read(train_path, train_label)
+            validation_dataset = input_reader.read(valid_path, valid_label)
+            self._log_datasets(input_reader)
+
+            train_sample_count = train_dataset.document_count
+            updates_epoch = train_sample_count // args.train_batch_size
+            updates_total = updates_epoch * args.epochs
+
+            self._logger.info("Updates per epoch: %s" % updates_epoch)
+            self._logger.info("Updates total: %s" % updates_total)
+
+            # load model
+            model = self._load_model(input_reader)
+
+            # SpERT is currently optimized on a single GPU and not thoroughly tested in a multi GPU setup
+            # If you still want to train SpERT on multiple GPUs, uncomment the following lines
+            # # parallelize model
+            # if self._device.type != 'cpu':
+            #     model = torch.nn.DataParallel(model)
+
+            model.to(self._device)
+
+            # create optimizer
+            optimizer_params = self._get_optimizer_params(model)
+            optimizer = AdamW(optimizer_params, lr=args.lr, weight_decay=args.weight_decay, correct_bias=False)
+            # create scheduler
+            scheduler = transformers.get_linear_schedule_with_warmup(optimizer,
+                                                                     num_warmup_steps=args.lr_warmup * updates_total,
+                                                                     num_training_steps=updates_total)
+            # create loss function
+            rel_criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
+            entity_criterion = torch.nn.CrossEntropyLoss(reduction='none')
+            compute_loss = SpERTLoss(rel_criterion, entity_criterion, model, optimizer, scheduler, args.max_grad_norm)
+
+            # eval validation set
+            if args.init_eval:
+                self._eval(model, validation_dataset, input_reader, 0, updates_epoch)
+
+            # train
+            for epoch in range(args.epochs):
+                # train epoch
+                self._train_epoch(model, compute_loss, optimizer, train_dataset, updates_epoch, epoch)
+
+                # eval validation sets
+                if not args.final_eval or (epoch == args.epochs - 1):
+                    if i == parts:
+                        self._cross_eval(model, evaluator, validation_dataset, input_reader, epoch + 1, updates_epoch,
+                                         end = True)
+                    else:
+                        self._cross_eval(model, evaluator, validation_dataset, input_reader, epoch + 1, updates_epoch,
+                                         end = False)
+
 
     def train(self, train_path: str, valid_path: str, types_path: str, input_reader_cls: Type[BaseInputReader]):
         args = self._args
@@ -205,6 +306,53 @@ class SpERTTrainer(BaseTrainer):
 
         return iteration
 
+    def _cross_eval(self, model: torch.nn.Module, evaluator: Evaluator, dataset: Dataset, input_reader: BaseInputReader,
+              epoch: int = 0, updates_epoch: int = 0, iteration: int = 0, end: bool = False):
+        self._logger.info("Evaluate: %s" % dataset.label)
+
+        if isinstance(model, DataParallel):
+            # currently no multi GPU support during evaluation
+            model = model.module
+
+        evaluator = evaluator
+
+        # create data loader
+        dataset.switch_mode(Dataset.EVAL_MODE)
+        data_loader = DataLoader(dataset, batch_size=self._args.eval_batch_size, shuffle=False, drop_last=False,
+                                 num_workers=self._args.sampling_processes, collate_fn=sampling.collate_fn_padding)
+
+        with torch.no_grad():
+            model.eval()
+
+            # iterate batches
+            total = math.ceil(dataset.document_count / self._args.eval_batch_size)
+            for batch in tqdm(data_loader, total=total, desc='Evaluate epoch %s' % epoch):
+                # move batch to selected device
+                batch = util.to_device(batch, self._device)
+
+                # run model (forward pass)
+                result = model(encodings=batch['encodings'], context_masks=batch['context_masks'],
+                               entity_masks=batch['entity_masks'], entity_sizes=batch['entity_sizes'],
+                               entity_spans=batch['entity_spans'], entity_sample_masks=batch['entity_sample_masks'],
+                               inference=True)
+                entity_clf, rel_clf, rels = result
+
+                # evaluate batch
+                evaluator.eval_batch(entity_clf, rel_clf, rels, batch)
+
+        if end:
+            global_iteration = epoch * updates_epoch + iteration
+            ner_eval, rel_eval, rel_nec_eval = evaluator.compute_scores()
+            self._log_eval(*ner_eval, *rel_eval, *rel_nec_eval,
+                           epoch, iteration, global_iteration, dataset.label)
+
+            if self._args.store_predictions and not self._args.no_overlapping:
+                evaluator.store_predictions()
+
+            if self._args.store_examples:
+                evaluator.store_examples()
+
+
     def _eval(self, model: torch.nn.Module, dataset: Dataset, input_reader: BaseInputReader,
               epoch: int = 0, updates_epoch: int = 0, iteration: int = 0):
         self._logger.info("Evaluate: %s" % dataset.label)
@@ -303,6 +451,7 @@ class SpERTTrainer(BaseTrainer):
 
     def _log_train(self, optimizer: Optimizer, loss: float, epoch: int,
                    iteration: int, global_iteration: int, label: str):
+
         # average loss
         avg_loss = loss / self._args.train_batch_size
         # get current learning rate

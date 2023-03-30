@@ -205,5 +205,5 @@ def store_predictions(documents, pred_entities, pred_relations, store_path):
         predictions.append(doc_predictions)
 
     # store as json
-    with open(store_path, 'w') as predictions_file:
-        json.dump(predictions, predictions_file)
+    with open(store_path, 'w', encoding='utf8') as predictions_file:
+        json.dump(predictions, predictions_file, indent=4, ensure_ascii=False)

@@ -24,7 +24,6 @@ class Evaluator:
         self._dataset = dataset
         self._rel_filter_threshold = rel_filter_threshold
         self._no_overlapping = no_overlapping
-
         self._predictions_path = predictions_path
         self._examples_path = examples_path
 
@@ -58,7 +57,7 @@ class Evaluator:
 
         print("")
         print("--- Entities (named entity recognition (NER)) ---")
-        print("An entity is considered correct if the entity type and span is predicted correctly")
+        # print("An entity is considered correct if the entity type and span is predicted correctly")
         print("")
         gt, pred = self._convert_by_setting(self._gt_entities, self._pred_entities, include_entity_types=True)
         ner_eval = self._score(gt, pred, print_results=True)
@@ -67,16 +66,16 @@ class Evaluator:
         print("--- Relations ---")
         print("")
         print("Without named entity classification (NEC)")
-        print("A relation is considered correct if the relation type and the spans of the two "
-              "related entities are predicted correctly (entity type is not considered)")
+        # print("A relation is considered correct if the relation type and the spans of the two "
+        #       "related entities are predicted correctly (entity type is not considered)")
         print("")
         gt, pred = self._convert_by_setting(self._gt_relations, self._pred_relations, include_entity_types=False)
         rel_eval = self._score(gt, pred, print_results=True)
 
         print("")
         print("With named entity classification (NEC)")
-        print("A relation is considered correct if the relation type and the two "
-              "related entities are predicted correctly (in span and entity type)")
+        # print("A relation is considered correct if the relation type and the two "
+        #       "related entities are predicted correctly (in span and entity type)")
         print("")
         gt, pred = self._convert_by_setting(self._gt_relations, self._pred_relations, include_entity_types=True)
         rel_nec_eval = self._score(gt, pred, print_results=True)
@@ -235,7 +234,7 @@ class Evaluator:
     def _print_results(self, per_type: List, micro: List, macro: List, types: List):
         columns = ('type', 'precision', 'recall', 'f1-score', 'support')
 
-        row_fmt = "%20s" + (" %12s" * (len(columns) - 1))
+        row_fmt = "%30s" + (" %12s" * (len(columns) - 1))
         results = [row_fmt % columns, '\n']
 
         metrics_per_type = []

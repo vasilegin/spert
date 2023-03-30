@@ -12,6 +12,8 @@ def get_token(h: torch.tensor, x: torch.tensor, token: int):
     """ Get specific token embedding (e.g. [CLS]) """
     emb_size = h.shape[-1]
 
+    # print(token)
+
     token_h = h.view(-1, emb_size)
     flat = x.contiguous().view(-1)
 

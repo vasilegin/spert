@@ -152,7 +152,7 @@ class JsonInputReader(BaseInputReader):
 
         for entity_idx, jentity in enumerate(jentities):
             entity_type = self._entity_types[jentity['type']]
-            start, end = jentity['start'], jentity['end']
+            start, end = int(jentity['start']), int(jentity['end'])
 
             # create entity mention
             tokens = doc_tokens[start:end]
@@ -164,6 +164,8 @@ class JsonInputReader(BaseInputReader):
 
     def _parse_relations(self, jrelations, entities, dataset) -> List[Relation]:
         relations = []
+
+        print(jrelations)
 
         for jrelation in jrelations:
             relation_type = self._relation_types[jrelation['type']]

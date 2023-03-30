@@ -13,6 +13,7 @@ class RelationType:
         self._verbose_name = verbose_name
         self._symmetric = symmetric
 
+
     @property
     def identifier(self):
         return self._identifier
